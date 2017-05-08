@@ -5,10 +5,11 @@
 #include<sstream>
 #include<list>
 #include<algorithm>
+#include<conio.h>
 using namespace std;
 
-char disk[8192];
-const int dataSize = 56;
+char disk[16384];
+const int dataSize = 56+128;
 const int nameLen = 16;
 map<int, string> pass;
 map<int, string> uid2name;
@@ -24,7 +25,7 @@ struct Finfo
 	char protectOwner;
 	char protectOther;
 	char next;
-	char no_use;
+	char openPriv;
 	int open;
 	int parent;
 	__int64 createTime;
@@ -41,11 +42,11 @@ Finfo newFile(string name,bool isDir)
 		throw 0;
 	}
 	Finfo ret;
-	ret.open = ret.next = ret.length = 0;
+	ret.open  = ret.length = 0;
 	ret.owner = curUser;
 	ret.isDir = isDir;
 	ret.createTime = ret.modifyTime = ret.visitTime = time(NULL);
-	ret.firstSub = ret.parent = ret.nextCousin = -1;
+	ret.firstSub = ret.next = ret.parent = ret.nextCousin = -1;
 	ret.protectOwner = 7;
 	ret.protectOther = 5;
 	memset(ret.data, 0, sizeof(ret.data));
@@ -54,11 +55,13 @@ Finfo newFile(string name,bool isDir)
 }
 int sz;
 Finfo *block;
+enum{READMODE=4,WRITEMODE=2,EXEMODE=1};
+
 bool chkPriv(int id, char priv)
 {
-	if (block[curDir].owner == curUser)
+	if (block[id].owner == curUser)
 	{
-		if ((block[curDir].protectOwner & priv) == priv)
+		if ((block[id].protectOwner & priv) == priv)
 		{
 			return true;
 		}
@@ -69,7 +72,7 @@ bool chkPriv(int id, char priv)
 	}
 	else
 	{
-		if ((block[curDir].protectOther & priv) == priv)
+		if ((block[id].protectOther & priv) == priv)
 		{
 			return true;
 		}
@@ -79,13 +82,71 @@ bool chkPriv(int id, char priv)
 		}
 	}
 }
+int getLength(int id)
+{
+	int len = block[id].length;
+	int pos = block[id].firstSub;
+	while (pos != -1)
+	{
+		len += getLength(pos);
+		pos = block[pos].nextCousin;
+	}
+	return len;
+}
+int getFile(int cur, string target)
+{
+	if (target == ".")
+		return curDir;
+	if (target == "..")
+		return block[cur].parent;
+	int pos = block[cur].firstSub;
+	while (pos != -1)
+	{
+		if (target == string(block[pos].name))
+		{
+			return pos;
+		}
+		pos = block[pos].nextCousin;
+	}
+	return -1;
+}
+void initUser()
+{
+	int ufile = getFile(0, "user.txt");
+	if (ufile != -1 && block[ufile].isDir == false)
+	{
+		char *data = block[ufile].data;
+		stringstream tmp(data);
+		int n;
+		tmp >> n;
+		if (tmp.good())
+		{
+			while (n--)
+			{
+				int uid;
+				string name, password;
+				tmp >> uid >> name >> password;
+				if (tmp.bad())
+				{
+					break;
+				}
+				pass[uid] = password;
+				uid2name[uid] = name;
+			}
+		}
+	}
+	pass[1000] = "root";
+	uid2name[1000] = "root";
+	curUser = -1;
+}
 void login()
 {
+	initUser();
 	string user, password;
 	cout << "Username:";
-	cin >> user;
+	std::cin >> user;
 	cout << "Password:";
-	cin >> password;
+	std::cin >> password;
 	int tuid=-1;
 	for (auto i : uid2name)
 	{
@@ -145,23 +206,6 @@ int findUnused(char *used)
 		}
 	}
 	return -1;
-}
-int getFile(int cur, string target)
-{
-	if (target == ".")
-		return curDir;
-	if (target == "..")
-		return block[cur].parent;
-	int pos = block[cur].firstSub;
-	while (pos != -1)
-	{
-		if (target == string(block[pos].name))
-		{
-			return pos;
-		}
-		pos = block[pos].nextCousin;
-	}
-	return - 1;
 }
 void chdir(string target)
 {
@@ -243,31 +287,6 @@ void mkdir(string target)
 		cout << "Cannot create." << endl;
 	}
 }
-void initUser()
-{
-	int ufile = getFile(0, "user.txt");
-	if (ufile!=-1 && block[ufile].isDir == false)
-	{
-		char *data = block[ufile].data;
-		stringstream tmp(data);
-		int n;
-		tmp >> n;
-		while(n--)
-		{
-			int uid;
-			string name, password;
-			tmp >> uid >> name >> password;
-			pass[uid] = password;
-			uid2name[uid] = name;
-		}
-	}
-	else
-	{
-		pass[1000] = "root";
-		uid2name[1000] = "root";
-	}
-	curUser = -1;
-}
 void create(string fname)
 {
 	if (chkPriv(curDir, 2))
@@ -319,7 +338,7 @@ void showDir()
 	printf("%-8s %-8s %-3dByte %c%-3s %-3s %-20s\n",
 		".", 
 		uid2name[block[curDir].owner].c_str(),
-		block[curDir].length,
+		getLength(curDir),
 		block[curDir].isDir?'D':' ',
 		getPriv(block[curDir].protectOwner).c_str(), 
 		getPriv(block[curDir].protectOther).c_str(),
@@ -333,7 +352,7 @@ void showDir()
 		printf("%-8s %-8s %-3dByte %c%-3s %-3s %-20s %#06x\n", 
 			a.name,
 			uid2name[a.owner].c_str(),
-			a.length,
+			getLength(pos),
 			a.isDir ? 'D' : ' ',
 			getPriv(a.protectOwner).c_str(),
 			getPriv(a.protectOther).c_str(),
@@ -414,27 +433,14 @@ void _delSubTree(int id)
 		_delSubTree(pos);
 		pos = nxt;
 	}
-	if (block[id].owner == curUser)
+
+	if (chkPriv(id,3))
 	{
-		if ((block[id].protectOwner & 3)==3)
-		{
-			_delSingle(pos);
-		}
-		else
-		{
-			cout << "Cannot delete \"" << block[pos].name << "\"." << endl;
-		}
+		_delSingle(id);
 	}
 	else
 	{
-		if ((block[id].protectOther & 3)==3)
-		{
-			_delSingle(pos);
-		}
-		else
-		{
-			cout << "Cannot delete \"" << block[pos].name << "\"." << endl;
-		}
+		cout << "Cannot delete \"" << block[pos].name << "\"." << endl;
 	}
 }
 void del(string fname)
@@ -448,7 +454,7 @@ void del(string fname)
 	{
 		cout << "Do you want to del the folder and ALL FILES in it?: ";
 		string ans;
-		cin >> ans;
+		std::cin >> ans;
 		if (ans == "y" || ans == "Y")
 		{
 			_delSubTree(tar);
@@ -457,6 +463,158 @@ void del(string fname)
 	else
 	{
 		_delSubTree(tar);
+	}
+}
+void openfile(char mode, string name)
+{
+	int id = getFile(curDir, name);
+	if (id == -1)
+	{
+		cout << "File not found." << endl;
+		return;
+	}
+	if (!chkPriv(id, mode))
+	{
+		cout << "No permition." << endl;
+		return;
+	}
+	if (block[id].isDir)
+	{
+		cout << "Not a file." << endl;
+		return;
+	}
+	if (block[id].open == curUser)
+	{
+		cout << "File is already opened for use." << endl;
+	}
+	else if (block[id].open != 0)
+	{
+		cout << "File is opened by others." << endl;
+	}
+	else
+	{
+		block[id].open = curUser;
+		block[id].openPriv = mode;
+		cout << "Opened." << endl;
+	}
+}
+void closefile(string name)
+{
+	int id = getFile(curDir, name);
+	if (id == -1)
+	{
+		cout << "File not found." << endl;
+		return;
+	}
+	if (block[id].isDir)
+	{
+		cout << "Not a file." << endl;
+		return;
+	}
+	if (block[id].open == curUser)
+	{
+		block[id].open = 0;
+		block[id].openPriv = 0;
+		cout << "Closed." << endl;
+	}
+	else
+	{
+		cout << "File isn't open." << endl;
+	}
+}
+void readfile(string name)
+{
+	int id = getFile(curDir, name);
+	if (id == -1)
+	{
+		cout << "File not found." << endl;
+		return;
+	}
+	if (block[id].isDir)
+	{
+		cout << "Not a file." << endl;
+		return;
+	}
+	if (block[id].open != curUser || (block[id].openPriv&READMODE) == 0)
+	{
+		cout << "Can not read, please open for read first." << endl;
+	}
+	else
+	{
+		cout << "--------------Start Of File--------------" << endl;
+		for (int i = 0; i < block[id].length; i++)
+		{
+			cout << block[id].data[i];
+		}
+		cout <<endl<< "---------------End Of File---------------" << endl;
+	}
+}
+void writefile(string mode, string name)
+{
+	int id = getFile(curDir, name);
+	if (id == -1)
+	{
+		cout << "File not found." << endl;
+		return;
+	}
+	if (block[id].isDir)
+	{
+		cout << "Not a file." << endl;
+		return;
+	}
+	if (block[id].open != curUser || (block[id].openPriv&WRITEMODE) == 0)
+	{
+		cout << "Can not write, please open for write first." << endl;
+		return;
+	}
+	if (mode == "over-write" || mode == "add-to-end")
+	{
+		if(mode == "over-write")cout << "Line to write :\n> ";
+		if(mode == "add-at-end")cout << "Line to add :\n> ";
+		if (mode == "over-write")block[id].length = 0;
+		char c;
+		int curl = 0;
+		for (int i = block[id].length; i < dataSize; i++)
+		{
+			c = _getch();
+			if (c == 27)
+			{
+				block[id].length = i;
+				cout << endl;
+				return;
+			}
+			else if (c == '\r')
+			{
+				curl = 0;
+				block[id].data[i] = '\n';
+				cout << endl << ">";
+			}
+			else if (c == '\b')
+			{
+				if (curl <= 0)
+				{
+					i--;
+					continue;
+				}
+				curl--;
+				i -= 2;
+				putchar('\b');
+				putchar(' ');
+				putchar('\b');
+			}
+			else
+			{
+				curl++;
+				block[id].data[i] = c;
+				cout << c;
+			}
+		}
+		block[id].length = dataSize;
+		cout << endl << "Input is too long." << endl;
+	}
+	else
+	{
+		cout << "Unknown mode." << endl;
 	}
 }
 int main()
@@ -470,7 +628,7 @@ int main()
 	{
 		cout << "Read data from file (Y/N)£¿: " ;
 		string ans;
-		cin >> ans;
+		std::cin >> ans;
 		if (ans == "n" || ans == "N")
 		{
 			memset(disk, sizeof(disk), 0);
@@ -522,7 +680,7 @@ int main()
 	{
 		showPrompt();
 		string cmd;
-		cin >> cmd;
+		std::cin >> cmd;
 		if (cmd == "exit")
 		{
 			break;
@@ -530,25 +688,25 @@ int main()
 		else if (cmd == "cd")
 		{
 			string dir;
-			cin >> dir;
+			std::cin >> dir;
 			chdir(dir);
 		}
 		else if (cmd == "mkdir")
 		{
 			string dir;
-			cin >> dir;
+			std::cin >> dir;
 			mkdir(dir);
 		}
 		else if (cmd == "create")
 		{
 			string fname;
-			cin >> fname;
+			std::cin >> fname;
 			create(fname);
 		}
 		else if (cmd == "delete")
 		{
 			string fname;
-			cin >> fname;
+			std::cin >> fname;
 			del(fname);
 		}
 		else if (cmd == "login")
@@ -562,18 +720,53 @@ int main()
 		else if (cmd == "chmod")
 		{
 			int protectOwner, protectOther;
-			cin >> protectOwner >> protectOther;
+			std::cin >> protectOwner >> protectOther;
 			chmod(protectOwner, protectOther);
 		}
 		else if (cmd == "chown")
 		{
 			string uname;
-			cin >> uname;
+			std::cin >> uname;
 			chown(uname);
 		}
 		else if (cmd == "cls")
 		{
 			system("cls");
+		}
+		else if (cmd == "open")
+		{
+			string mode, name;
+			std::cin >> mode >> name;
+			int imode = mode == "r" ? READMODE :
+				(mode == "w" ? WRITEMODE :
+				(mode == "rw" ? READMODE | WRITEMODE : 
+					0));
+			if (imode == 0)
+			{
+				cout << "Unknown mode." << endl;
+			}
+			else
+			{
+				openfile(imode, name);
+			}
+		}
+		else if (cmd == "close")
+		{
+			string name;
+			std::cin >> name;
+			closefile(name);
+		}
+		else if (cmd == "read")
+		{
+			string name;
+			std::cin >> name;
+			readfile(name);
+		}
+		else if (cmd == "write")
+		{
+			string mode, name;
+			std::cin >> mode >> name;
+			writefile(mode, name);
 		}
 		else
 		{
@@ -584,7 +777,7 @@ int main()
 	{
 		cout << "Write data to file (Y/N)£¿: ";
 		string ans;
-		cin >> ans;
+		std::cin >> ans;
 		if (ans == "n" || ans == "N")
 		{
 			break;
